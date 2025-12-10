@@ -2,6 +2,8 @@
 
 A Cloudflare Worker that consumes [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) events from a [Queue](https://developers.cloudflare.com/queues/) and sends status notifications to Slack
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/yomna-shousha/workers-builds-queue-subscriptions)
+
 ## Features
 
 | Event | Notification |
