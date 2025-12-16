@@ -1,22 +1,19 @@
 {
-  "name": "workers-builds-queue-subscriptions",
+  "name": "workers-builds-notifications-template",
   "version": "1.0.0",
-  "description": "Send Cloudflare Workers Builds notifications to Slack via Queue Event Subscriptions",
+  "description": "Send Workers Builds status notifications to Slack, Discord, or any webhook via Event Subscriptions.",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail"
   },
-  "keywords": [
-    "cloudflare",
-    "workers",
-    "builds",
-    "slack",
-    "notifications",
-    "queues",
-    "event-subscriptions"
-  ],
+  "cloudflare": {
+    "label": "Workers Builds Notifications",
+    "products": ["Workers Builds", "Queues"],
+    "categories": [],
+    "preview_image_url": ""
+  },
   "devDependencies": {
     "typescript": "^5.5.2",
     "wrangler": "^4.45.0"
