@@ -60,20 +60,6 @@ interface CloudflareEvent {
 // HELPER FUNCTIONS
 // =============================================================================
 
-function getBuildDuration(event: CloudflareEvent): string | null {
-  const start = event.payload?.createdAt;
-  const end = event.payload?.stoppedAt;
-  if (!start || !end) return null;
-  
-  const durationMs = new Date(end).getTime() - new Date(start).getTime();
-  const seconds = Math.floor(durationMs / 1000);
-  
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${minutes}m ${remainingSeconds}s`;
-}
-
 function getCommitUrl(event: CloudflareEvent): string | null {
   const meta = event.payload?.buildTriggerMetadata;
   if (!meta?.repoName || !meta?.commitHash || !meta?.providerAccountName) return null;
@@ -92,42 +78,53 @@ function isProductionBranch(branch: string | undefined): boolean {
   return ['main', 'master', 'production', 'prod'].includes(branch.toLowerCase());
 }
 
-function truncateCommitMessage(message: string | undefined): string {
-  if (!message) return '';
-  const firstLine = message.split('\n')[0].trim();
-  return firstLine.length > 50 ? firstLine.substring(0, 47) + '...' : firstLine;
-}
-
 function extractBuildError(logs: string[]): string {
   if (!logs || logs.length === 0) {
     return 'No logs available';
   }
 
-  const lastLines = logs.slice(-30);
-  const errorIndicators = [
-    'ERROR:', 'Error:', 'error:',
-    'FAILED:', 'Failed:', 'failed:',
-    'error TS', 'SyntaxError', 'ReferenceError',
-    'Module not found', 'Cannot find module',
-    'Build failed', 'Compilation failed',
-  ];
-
-  let errorStartIdx = -1;
-  for (let i = lastLines.length - 1; i >= 0; i--) {
-    if (errorIndicators.some((indicator) => lastLines[i]?.includes(indicator))) {
-      errorStartIdx = i;
-      break;
+  // Look for the actual error message (not stack traces)
+  // Error messages usually start with "Error:" or similar
+  for (let i = 0; i < logs.length; i++) {
+    const line = logs[i];
+    // Skip stack trace lines
+    if (line?.trim().startsWith('at ')) continue;
+    
+    // Look for error message patterns
+    if (line?.match(/^Error:|^ERROR:|^\[ERROR\]|^✘.*ERROR/i)) {
+      // Get this line and maybe the next line if it's not a stack trace
+      let errorMsg = line;
+      if (logs[i + 1] && !logs[i + 1]?.trim().startsWith('at ')) {
+        errorMsg += '\n' + logs[i + 1];
+      }
+      return errorMsg.length > 500 ? errorMsg.substring(0, 500) + '...' : errorMsg;
     }
   }
 
-  if (errorStartIdx >= 0) {
-    const errorLines = lastLines.slice(errorStartIdx, errorStartIdx + 8);
-    const errorText = errorLines.join('\n').trim();
-    return errorText.length > 800 ? errorText.substring(0, 800) + '\n...' : errorText;
+  // Fallback: look for common error indicators in last 20 lines
+  const lastLines = logs.slice(-20);
+  const errorIndicators = [
+    'Failed:', 'failed:', 'FAILED:',
+    'Module not found', 'Cannot find module',
+    'Build failed', 'Compilation failed',
+    'SyntaxError', 'TypeError', 'ReferenceError',
+  ];
+
+  for (const line of lastLines) {
+    if (errorIndicators.some((indicator) => line?.includes(indicator))) {
+      return line.length > 500 ? line.substring(0, 500) + '...' : line;
+    }
   }
 
-  const fallback = lastLines.slice(-8).join('\n').trim();
-  return fallback || 'Build failed';
+  // Last resort: return last non-empty line
+  for (let i = logs.length - 1; i >= 0; i--) {
+    if (logs[i]?.trim()) {
+      const line = logs[i];
+      return line.length > 500 ? line.substring(0, 500) + '...' : line;
+    }
+  }
+
+  return 'Build failed';
 }
 
 function getDashboardUrl(event: CloudflareEvent): string | null {
@@ -150,7 +147,6 @@ function buildSlackBlocks(
   const buildOutcome = event.payload?.buildOutcome;
   const meta = event.payload?.buildTriggerMetadata;
   const dashUrl = getDashboardUrl(event);
-  const duration = getBuildDuration(event);
   const commitUrl = getCommitUrl(event);
 
   const isCancelled = buildOutcome === 'cancelled';
@@ -158,7 +154,7 @@ function buildSlackBlocks(
   const isSucceeded = event.type?.includes('succeeded');
   const isProduction = isProductionBranch(meta?.branch);
 
-  // Build context line: `branch` • commit • ⏱ duration
+  // Build context line: `branch` • commit
   const contextParts: string[] = [];
   if (meta?.branch) {
     contextParts.push(`\`${meta.branch}\``);
@@ -167,110 +163,75 @@ function buildSlackBlocks(
     const commitText = meta.commitHash.substring(0, 7);
     contextParts.push(commitUrl ? `<${commitUrl}|${commitText}>` : commitText);
   }
-  if (duration) {
-    contextParts.push(`⏱ ${duration}`);
-  }
   const contextLine = contextParts.length > 0 ? contextParts.join('  •  ') : '';
 
   // ===================
   // SUCCESS: Production
   // ===================
   if (isSucceeded && isProduction) {
-    const commitMsg = truncateCommitMessage(meta?.commitMessage);
-    
-    let text = `✅ *${workerName}* deployed to production`;
-    if (commitMsg) text += `\n${commitMsg}`;
+    let text = `✅ *${workerName}* deployed successfully`;
     if (contextLine) text += `\n${contextLine}`;
 
-    const buttons: any[] = [];
+    const block: any = {
+      type: 'section',
+      text: { type: 'mrkdwn', text },
+    };
+
     if (liveUrl) {
-      buttons.push({
+      block.accessory = {
         type: 'button',
-        text: { type: 'plain_text', text: 'Open Worker', emoji: true },
+        text: { type: 'plain_text', text: 'View Worker', emoji: true },
         url: liveUrl,
-        style: 'primary',
-      });
-    }
-    if (dashUrl) {
-      buttons.push({
-        type: 'button',
-        text: { type: 'plain_text', text: 'View Build', emoji: true },
-        url: dashUrl,
-      });
+      };
     }
 
-    const blocks: any[] = [
-      { type: 'section', text: { type: 'mrkdwn', text } },
-    ];
-    if (buttons.length > 0) {
-      blocks.push({ type: 'actions', elements: buttons });
-    }
-
-    return { blocks };
+    return { blocks: [block] };
   }
 
   // =================
   // SUCCESS: Preview
   // =================
   if (isSucceeded && !isProduction) {
-    const commitMsg = truncateCommitMessage(meta?.commitMessage);
-    
     let text = `✅ *${workerName}* preview ready`;
-    if (commitMsg) text += `\n${commitMsg}`;
     if (contextLine) text += `\n${contextLine}`;
 
-    const buttons: any[] = [];
+    const block: any = {
+      type: 'section',
+      text: { type: 'mrkdwn', text },
+    };
+
     if (previewUrl) {
-      buttons.push({
+      block.accessory = {
         type: 'button',
         text: { type: 'plain_text', text: 'View Preview', emoji: true },
         url: previewUrl,
-        style: 'primary',
-      });
-    }
-    if (dashUrl) {
-      buttons.push({
-        type: 'button',
-        text: { type: 'plain_text', text: 'View Build', emoji: true },
-        url: dashUrl,
-      });
+      };
     }
 
-    const blocks: any[] = [
-      { type: 'section', text: { type: 'mrkdwn', text } },
-    ];
-    if (buttons.length > 0) {
-      blocks.push({ type: 'actions', elements: buttons });
-    }
-
-    return { blocks };
+    return { blocks: [block] };
   }
 
   // =================
   // SUCCESS: No URL (fallback)
   // =================
   if (isSucceeded) {
-    const commitMsg = truncateCommitMessage(meta?.commitMessage);
-    
-    let text = `✅ *${workerName}* deployed`;
-    if (commitMsg) text += `\n${commitMsg}`;
+    let text = `✅ *${workerName}* deployed successfully`;
     if (contextLine) text += `\n${contextLine}`;
 
-    const blocks: any[] = [
-      { type: 'section', text: { type: 'mrkdwn', text } },
-    ];
+    const block: any = {
+      type: 'section',
+      text: { type: 'mrkdwn', text },
+    };
+
     if (dashUrl) {
-      blocks.push({
-        type: 'actions',
-        elements: [{
-          type: 'button',
-          text: { type: 'plain_text', text: 'View Build', emoji: true },
-          url: dashUrl,
-        }],
-      });
+      block.accessory = {
+        type: 'button',
+        text: { type: 'plain_text', text: 'View Build', emoji: true },
+        url: dashUrl,
+      };
     }
 
-    return { blocks };
+    return { blocks: [block] };
   }
 
   // =========
@@ -279,29 +240,30 @@ function buildSlackBlocks(
   if (isFailed) {
     const error = extractBuildError(logs);
 
-    let text = `❌ *${workerName}* build failed`;
-
     const blocks: any[] = [
-      { type: 'section', text: { type: 'mrkdwn', text } },
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: `❌ Build Failed: ${workerName}`, emoji: true },
+      },
     ];
 
     // Metadata fields
-    if (meta) {
-      const fields: any[] = [];
-      if (meta.branch) fields.push({ type: 'mrkdwn', text: `*Branch*\n\`${meta.branch}\`` });
-      if (meta.commitHash) {
-        const commitText = meta.commitHash.substring(0, 7);
-        fields.push({ 
-          type: 'mrkdwn', 
-          text: `*Commit*\n${commitUrl ? `<${commitUrl}|${commitText}>` : commitText}` 
-        });
-      }
-      if (meta.author) fields.push({ type: 'mrkdwn', text: `*Author*\n${meta.author.split('@')[0]}` });
-      if (duration) fields.push({ type: 'mrkdwn', text: `*Duration*\n${duration}` });
-      
-      if (fields.length > 0) {
-        blocks.push({ type: 'section', fields });
-      }
+    const fields: any[] = [];
+    if (meta?.branch) fields.push({ type: 'mrkdwn', text: `*Branch*\n\`${meta.branch}\`` });
+    if (meta?.commitHash) {
+      const commitText = meta.commitHash.substring(0, 7);
+      fields.push({ 
+        type: 'mrkdwn', 
+        text: `*Commit*\n${commitUrl ? `<${commitUrl}|${commitText}>` : commitText}` 
+      });
+    }
+    if (meta?.author) {
+      const authorName = meta.author.includes('@') ? meta.author.split('@')[0] : meta.author;
+      fields.push({ type: 'mrkdwn', text: `*Author*\n${authorName}` });
+    }
+    
+    if (fields.length > 0) {
+      blocks.push({ type: 'section', fields });
     }
 
     // Error block
@@ -332,22 +294,20 @@ function buildSlackBlocks(
     let text = `⚠️ *${workerName}* build cancelled`;
     if (contextLine) text += `\n${contextLine}`;
 
-    const blocks: any[] = [
-      { type: 'section', text: { type: 'mrkdwn', text } },
-    ];
+    const block: any = {
+      type: 'section',
+      text: { type: 'mrkdwn', text },
+    };
 
     if (dashUrl) {
-      blocks.push({
-        type: 'actions',
-        elements: [{
-          type: 'button',
-          text: { type: 'plain_text', text: 'View Build', emoji: true },
-          url: dashUrl,
-        }],
-      });
+      block.accessory = {
+        type: 'button',
+        text: { type: 'plain_text', text: 'View Build', emoji: true },
+        url: dashUrl,
+      };
     }
 
-    return { blocks };
+    return { blocks: [block] };
   }
 
   // =========
