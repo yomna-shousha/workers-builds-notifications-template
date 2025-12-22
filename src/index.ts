@@ -75,36 +75,71 @@ interface CloudflareEvent {
 // =============================================================================
 
 /**
+ * Calculate build duration from timestamps
+ */
+function getBuildDuration(event: CloudflareEvent): string | null {
+  const start = event.payload.createdAt;
+  const end = event.payload.stoppedAt;
+  
+  if (!start || !end) return null;
+  
+  const durationMs = new Date(end).getTime() - new Date(start).getTime();
+  const seconds = Math.floor(durationMs / 1000);
+  
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
+/**
+ * Get GitHub commit URL if available
+ */
+function getCommitUrl(event: CloudflareEvent): string | null {
+  const meta = event.payload.buildTriggerMetadata;
+  if (!meta?.repoName || !meta?.commitHash || !meta?.providerAccountName) return null;
+  
+  if (meta.providerType === 'github') {
+    return `https://github.com/${meta.providerAccountName}/${meta.repoName}/commit/${meta.commitHash}`;
+  }
+  if (meta.providerType === 'gitlab') {
+    return `https://gitlab.com/${meta.providerAccountName}/${meta.repoName}/-/commit/${meta.commitHash}`;
+  }
+  return null;
+}
+
+/**
+ * Check if branch is production (main/master)
+ */
+function isProductionBranch(branch: string): boolean {
+  return ['main', 'master', 'production', 'prod'].includes(branch.toLowerCase());
+}
+
+/**
+ * Truncate commit message to first line, max 50 chars
+ */
+function truncateCommitMessage(message: string): string {
+  const firstLine = message.split('\n')[0].trim();
+  return firstLine.length > 50 ? firstLine.substring(0, 47) + '...' : firstLine;
+}
+
+/**
  * Extract the relevant error from build logs (last ~10 lines with error context)
- * @param logs Array of log lines
- * @returns Error text or fallback
  */
 function extractBuildError(logs: string[]): string {
   if (!logs || logs.length === 0) {
-    return 'No logs available. Click "View Full Logs" for details.';
+    return 'No logs available';
   }
 
-  // Look at last 30 lines for errors (most errors appear at end)
   const lastLines = logs.slice(-30);
-
-  // Common error indicators
   const errorIndicators = [
-    'ERROR:',
-    'Error:',
-    'error:',
-    'FAILED:',
-    'Failed:',
-    'failed:',
-    'error TS',
-    'SyntaxError',
-    'ReferenceError',
-    'Module not found',
-    'Cannot find module',
-    'Build failed',
-    'Compilation failed',
+    'ERROR:', 'Error:', 'error:',
+    'FAILED:', 'Failed:', 'failed:',
+    'error TS', 'SyntaxError', 'ReferenceError',
+    'Module not found', 'Cannot find module',
+    'Build failed', 'Compilation failed',
   ];
 
-  // Find first error line
   let errorStartIdx = -1;
   for (let i = lastLines.length - 1; i >= 0; i--) {
     if (errorIndicators.some((indicator) => lastLines[i].includes(indicator))) {
@@ -114,30 +149,25 @@ function extractBuildError(logs: string[]): string {
   }
 
   if (errorStartIdx >= 0) {
-    // Extract error + next 10 lines for context
-    const errorLines = lastLines.slice(errorStartIdx, errorStartIdx + 10);
+    const errorLines = lastLines.slice(errorStartIdx, errorStartIdx + 8);
     const errorText = errorLines.join('\n').trim();
-
-    // Limit to 1000 chars for Slack
-    return errorText.length > 1000 ? errorText.substring(0, 1000) + '\n...' : errorText;
+    return errorText.length > 800 ? errorText.substring(0, 800) + '\n...' : errorText;
   }
 
-  // Fallback: return last 10 lines
-  const fallback = lastLines.slice(-10).join('\n').trim();
-  return fallback || 'Build failed. Click "View Full Logs" for details.';
+  const fallback = lastLines.slice(-8).join('\n').trim();
+  return fallback || 'Build failed';
 }
 
 /**
  * Generate dashboard URL for build logs
  */
 function getDashboardUrl(event: CloudflareEvent): string {
-  const workerName =
-    event.source.workerName || event.payload.buildTriggerMetadata?.repoName || 'worker';
+  const workerName = event.source.workerName || event.payload.buildTriggerMetadata?.repoName || 'worker';
   return `https://dash.cloudflare.com/${event.metadata.accountId}/workers/services/view/${workerName}/production/builds/${event.payload.buildUuid}`;
 }
 
 /**
- * Build Block Kit message based on event type
+ * Build Slack Block Kit message based on event type
  */
 function buildSlackBlocks(
   event: CloudflareEvent,
@@ -148,161 +178,272 @@ function buildSlackBlocks(
   const workerName = event.source.workerName || 'Worker';
   const buildOutcome = event.payload.buildOutcome;
   const meta = event.payload.buildTriggerMetadata;
+  const dashUrl = getDashboardUrl(event);
+  const duration = getBuildDuration(event);
+  const commitUrl = getCommitUrl(event);
 
   const isCancelled = buildOutcome === 'cancelled';
   const isFailed = event.type.includes('failed') && !isCancelled;
   const isSucceeded = event.type.includes('succeeded');
+  const isProduction = meta ? isProductionBranch(meta.branch) : true;
 
-  // Build branch + commit line
-  const branchCommit = meta ? `\`${meta.branch}\` • ${meta.commitHash.substring(0, 7)}` : '';
-
-  // Success: Production build
-  if (isSucceeded && liveUrl) {
-    return {
-      text: `✅ Build succeeded: ${workerName}`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `✅ *${workerName}* deployed${branchCommit ? '\n' + branchCommit : ''}`,
-          },
-          accessory: {
-            type: 'button',
-            text: { type: 'plain_text', text: 'Open Worker' },
-            url: liveUrl,
-          },
-        },
-      ],
-    };
+  // Build context elements (branch, commit, duration)
+  const contextElements: any[] = [];
+  
+  if (meta?.branch) {
+    contextElements.push({
+      type: 'mrkdwn',
+      text: `\`${meta.branch}\``,
+    });
+  }
+  
+  if (meta?.commitHash) {
+    const commitText = meta.commitHash.substring(0, 7);
+    contextElements.push({
+      type: 'mrkdwn',
+      text: commitUrl ? `<${commitUrl}|${commitText}>` : commitText,
+    });
+  }
+  
+  if (duration) {
+    contextElements.push({
+      type: 'mrkdwn',
+      text: `⏱ ${duration}`,
+    });
   }
 
-  // Success: Preview build
-  if (isSucceeded && previewUrl) {
-    return {
-      text: `✅ Preview ready: ${workerName}`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `✅ *${workerName}* preview ready${branchCommit ? '\n' + branchCommit : ''}`,
-          },
-          accessory: {
-            type: 'button',
-            text: { type: 'plain_text', text: 'View Preview' },
-            url: previewUrl,
-          },
-        },
-      ],
-    };
-  }
-
-  // Success: No URL available
-  if (isSucceeded) {
-    return {
-      text: `✅ Build succeeded: ${workerName}`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `✅ *${workerName}* deployed successfully${branchCommit ? '\n' + branchCommit : ''}`,
-          },
-        },
-      ],
-    };
-  }
-
-  // Failure
-  if (isFailed) {
-    const error = extractBuildError(logs);
-    const dashUrl = getDashboardUrl(event);
-
+  // ===================
+  // SUCCESS: Production
+  // ===================
+  if (isSucceeded && isProduction) {
     const blocks: any[] = [
-      {
-        type: 'header',
-        text: { type: 'plain_text', text: `❌ Build Failed: ${workerName}` },
-      },
-    ];
-
-    // Add metadata if available
-    if (meta) {
-      blocks.push({
-        type: 'section',
-        fields: [
-          { type: 'mrkdwn', text: `*Branch:*\n${meta.branch}` },
-          { type: 'mrkdwn', text: `*Commit:*\n${meta.commitHash.substring(0, 7)}` },
-          { type: 'mrkdwn', text: `*Author:*\n${meta.author.split('@')[0]}` },
-        ],
-      });
-    }
-
-    // Add error section
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*Error:*\n\`\`\`\n${error}\n\`\`\``,
-      },
-    });
-
-    // Add action button
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'View Full Logs' },
-          url: dashUrl,
-          style: 'danger',
-        },
-      ],
-    });
-
-    return {
-      text: `❌ Build failed: ${workerName}`,
-      blocks,
-    };
-  }
-
-  // Cancelled
-  if (isCancelled) {
-    const dashUrl = getDashboardUrl(event);
-    const branch = meta?.branch || 'unknown';
-    const author = meta?.author.split('@')[0] || 'unknown';
-
-    return {
-      text: `⚠️ Build cancelled: ${workerName}`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `⚠️ *${workerName}* build cancelled\n\`${branch}\` by ${author}`,
-          },
-          accessory: {
-            type: 'button',
-            text: { type: 'plain_text', text: 'View Build' },
-            url: dashUrl,
-          },
-        },
-      ],
-    };
-  }
-
-  // Fallback for other events
-  return {
-    text: `${event.type}`,
-    blocks: [
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `📢 ${event.type}`,
+          text: `✅ *${workerName}* deployed to production${meta?.commitMessage ? '\n' + truncateCommitMessage(meta.commitMessage) : ''}`,
         },
       },
-    ],
+    ];
+
+    if (contextElements.length > 0) {
+      blocks.push({ type: 'context', elements: contextElements });
+    }
+
+    const buttons: any[] = [];
+    if (liveUrl) {
+      buttons.push({
+        type: 'button',
+        text: { type: 'plain_text', text: '🌐 Open Worker', emoji: true },
+        url: liveUrl,
+        style: 'primary',
+      });
+    }
+    buttons.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'View Build', emoji: true },
+      url: dashUrl,
+    });
+
+    blocks.push({ type: 'actions', elements: buttons });
+
+    return {
+      text: `✅ ${workerName} deployed to production`,
+      attachments: [{
+        color: '#22c55e',
+        blocks,
+      }],
+    };
+  }
+
+  // =================
+  // SUCCESS: Preview
+  // =================
+  if (isSucceeded && !isProduction) {
+    const blocks: any[] = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `🔮 *${workerName}* preview ready${meta?.commitMessage ? '\n' + truncateCommitMessage(meta.commitMessage) : ''}`,
+        },
+      },
+    ];
+
+    if (contextElements.length > 0) {
+      blocks.push({ type: 'context', elements: contextElements });
+    }
+
+    const buttons: any[] = [];
+    if (previewUrl) {
+      buttons.push({
+        type: 'button',
+        text: { type: 'plain_text', text: '🔮 View Preview', emoji: true },
+        url: previewUrl,
+        style: 'primary',
+      });
+    }
+    buttons.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'View Build', emoji: true },
+      url: dashUrl,
+    });
+
+    blocks.push({ type: 'actions', elements: buttons });
+
+    return {
+      text: `🔮 ${workerName} preview ready`,
+      attachments: [{
+        color: '#8b5cf6',
+        blocks,
+      }],
+    };
+  }
+
+  // =================
+  // SUCCESS: No URL
+  // =================
+  if (isSucceeded) {
+    const blocks: any[] = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `✅ *${workerName}* deployed${meta?.commitMessage ? '\n' + truncateCommitMessage(meta.commitMessage) : ''}`,
+        },
+      },
+    ];
+
+    if (contextElements.length > 0) {
+      blocks.push({ type: 'context', elements: contextElements });
+    }
+
+    blocks.push({
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: 'View Build', emoji: true },
+        url: dashUrl,
+      }],
+    });
+
+    return {
+      text: `✅ ${workerName} deployed`,
+      attachments: [{
+        color: '#22c55e',
+        blocks,
+      }],
+    };
+  }
+
+  // =========
+  // FAILED
+  // =========
+  if (isFailed) {
+    const error = extractBuildError(logs);
+
+    const blocks: any[] = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `❌ *${workerName}* build failed`,
+        },
+      },
+    ];
+
+    // Metadata fields
+    if (meta) {
+      const fields: any[] = [];
+      if (meta.branch) fields.push({ type: 'mrkdwn', text: `*Branch*\n\`${meta.branch}\`` });
+      if (meta.commitHash) {
+        const commitText = meta.commitHash.substring(0, 7);
+        fields.push({ 
+          type: 'mrkdwn', 
+          text: `*Commit*\n${commitUrl ? `<${commitUrl}|${commitText}>` : commitText}` 
+        });
+      }
+      if (meta.author) fields.push({ type: 'mrkdwn', text: `*Author*\n${meta.author.split('@')[0]}` });
+      if (duration) fields.push({ type: 'mrkdwn', text: `*Duration*\n${duration}` });
+      
+      if (fields.length > 0) {
+        blocks.push({ type: 'section', fields });
+      }
+    }
+
+    // Error block
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `\`\`\`${error}\`\`\``,
+      },
+    });
+
+    blocks.push({
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: '📋 View Full Logs', emoji: true },
+        url: dashUrl,
+        style: 'danger',
+      }],
+    });
+
+    return {
+      text: `❌ ${workerName} build failed`,
+      attachments: [{
+        color: '#ef4444',
+        blocks,
+      }],
+    };
+  }
+
+  // ===========
+  // CANCELLED
+  // ===========
+  if (isCancelled) {
+    const blocks: any[] = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `⚠️ *${workerName}* build cancelled`,
+        },
+      },
+    ];
+
+    if (contextElements.length > 0) {
+      blocks.push({ type: 'context', elements: contextElements });
+    }
+
+    blocks.push({
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: 'View Build', emoji: true },
+        url: dashUrl,
+      }],
+    });
+
+    return {
+      text: `⚠️ ${workerName} build cancelled`,
+      attachments: [{
+        color: '#f59e0b',
+        blocks,
+      }],
+    };
+  }
+
+  // =========
+  // FALLBACK
+  // =========
+  return {
+    text: event.type,
+    blocks: [{
+      type: 'section',
+      text: { type: 'mrkdwn', text: `📢 ${event.type}` },
+    }],
   };
 }
 
@@ -359,7 +500,6 @@ export default {
             }
           } catch (error) {
             console.error('Failed to fetch URLs:', error);
-            // Continue without URLs
           }
         }
 
@@ -392,19 +532,14 @@ export default {
             } while (cursor);
           } catch (error) {
             console.error('Failed to fetch logs:', error);
-            // Continue without logs
           }
         }
 
         // ---------------------------------------------------------------------
-        // BUILD BLOCK KIT MESSAGE
+        // BUILD AND SEND SLACK MESSAGE
         // ---------------------------------------------------------------------
 
         const slackPayload = buildSlackBlocks(event, previewUrl, liveUrl, logs);
-
-        // ---------------------------------------------------------------------
-        // SEND TO SLACK
-        // ---------------------------------------------------------------------
 
         await fetch(env.SLACK_WEBHOOK_URL, {
           method: 'POST',
