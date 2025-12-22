@@ -158,55 +158,35 @@ function buildSlackBlocks(
   const isSucceeded = event.type?.includes('succeeded');
   const isProduction = isProductionBranch(meta?.branch);
 
-  // Build context elements (branch, commit, duration)
-  const contextElements: any[] = [];
-  
+  // Build context line: `branch` • commit • ⏱ duration
+  const contextParts: string[] = [];
   if (meta?.branch) {
-    contextElements.push({
-      type: 'mrkdwn',
-      text: `\`${meta.branch}\``,
-    });
+    contextParts.push(`\`${meta.branch}\``);
   }
-  
   if (meta?.commitHash) {
     const commitText = meta.commitHash.substring(0, 7);
-    contextElements.push({
-      type: 'mrkdwn',
-      text: commitUrl ? `<${commitUrl}|${commitText}>` : commitText,
-    });
+    contextParts.push(commitUrl ? `<${commitUrl}|${commitText}>` : commitText);
   }
-  
   if (duration) {
-    contextElements.push({
-      type: 'mrkdwn',
-      text: `⏱ ${duration}`,
-    });
+    contextParts.push(`⏱ ${duration}`);
   }
+  const contextLine = contextParts.length > 0 ? contextParts.join('  •  ') : '';
 
   // ===================
   // SUCCESS: Production
   // ===================
   if (isSucceeded && isProduction) {
     const commitMsg = truncateCommitMessage(meta?.commitMessage);
-    const blocks: any[] = [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `✅ *${workerName}* deployed to production${commitMsg ? '\n' + commitMsg : ''}`,
-        },
-      },
-    ];
-
-    if (contextElements.length > 0) {
-      blocks.push({ type: 'context', elements: contextElements });
-    }
+    
+    let text = `✅ *${workerName}* deployed to production`;
+    if (commitMsg) text += `\n${commitMsg}`;
+    if (contextLine) text += `\n${contextLine}`;
 
     const buttons: any[] = [];
     if (liveUrl) {
       buttons.push({
         type: 'button',
-        text: { type: 'plain_text', text: '🌐 Open Worker', emoji: true },
+        text: { type: 'plain_text', text: 'Open Worker', emoji: true },
         url: liveUrl,
         style: 'primary',
       });
@@ -219,14 +199,14 @@ function buildSlackBlocks(
       });
     }
 
+    const blocks: any[] = [
+      { type: 'section', text: { type: 'mrkdwn', text } },
+    ];
     if (buttons.length > 0) {
       blocks.push({ type: 'actions', elements: buttons });
     }
 
-    return {
-      text: `✅ ${workerName} deployed to production`,
-      attachments: [{ color: '#22c55e', blocks }],
-    };
+    return { blocks };
   }
 
   // =================
@@ -234,25 +214,16 @@ function buildSlackBlocks(
   // =================
   if (isSucceeded && !isProduction) {
     const commitMsg = truncateCommitMessage(meta?.commitMessage);
-    const blocks: any[] = [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `🔮 *${workerName}* preview ready${commitMsg ? '\n' + commitMsg : ''}`,
-        },
-      },
-    ];
-
-    if (contextElements.length > 0) {
-      blocks.push({ type: 'context', elements: contextElements });
-    }
+    
+    let text = `✅ *${workerName}* preview ready`;
+    if (commitMsg) text += `\n${commitMsg}`;
+    if (contextLine) text += `\n${contextLine}`;
 
     const buttons: any[] = [];
     if (previewUrl) {
       buttons.push({
         type: 'button',
-        text: { type: 'plain_text', text: '🔮 View Preview', emoji: true },
+        text: { type: 'plain_text', text: 'View Preview', emoji: true },
         url: previewUrl,
         style: 'primary',
       });
@@ -265,14 +236,14 @@ function buildSlackBlocks(
       });
     }
 
+    const blocks: any[] = [
+      { type: 'section', text: { type: 'mrkdwn', text } },
+    ];
     if (buttons.length > 0) {
       blocks.push({ type: 'actions', elements: buttons });
     }
 
-    return {
-      text: `🔮 ${workerName} preview ready`,
-      attachments: [{ color: '#8b5cf6', blocks }],
-    };
+    return { blocks };
   }
 
   // =================
@@ -280,20 +251,14 @@ function buildSlackBlocks(
   // =================
   if (isSucceeded) {
     const commitMsg = truncateCommitMessage(meta?.commitMessage);
+    
+    let text = `✅ *${workerName}* deployed`;
+    if (commitMsg) text += `\n${commitMsg}`;
+    if (contextLine) text += `\n${contextLine}`;
+
     const blocks: any[] = [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `✅ *${workerName}* deployed${commitMsg ? '\n' + commitMsg : ''}`,
-        },
-      },
+      { type: 'section', text: { type: 'mrkdwn', text } },
     ];
-
-    if (contextElements.length > 0) {
-      blocks.push({ type: 'context', elements: contextElements });
-    }
-
     if (dashUrl) {
       blocks.push({
         type: 'actions',
@@ -305,10 +270,7 @@ function buildSlackBlocks(
       });
     }
 
-    return {
-      text: `✅ ${workerName} deployed`,
-      attachments: [{ color: '#22c55e', blocks }],
-    };
+    return { blocks };
   }
 
   // =========
@@ -317,16 +279,13 @@ function buildSlackBlocks(
   if (isFailed) {
     const error = extractBuildError(logs);
 
+    let text = `❌ *${workerName}* build failed`;
+
     const blocks: any[] = [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `❌ *${workerName}* build failed`,
-        },
-      },
+      { type: 'section', text: { type: 'mrkdwn', text } },
     ];
 
+    // Metadata fields
     if (meta) {
       const fields: any[] = [];
       if (meta.branch) fields.push({ type: 'mrkdwn', text: `*Branch*\n\`${meta.branch}\`` });
@@ -345,12 +304,10 @@ function buildSlackBlocks(
       }
     }
 
+    // Error block
     blocks.push({
       type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `\`\`\`${error}\`\`\``,
-      },
+      text: { type: 'mrkdwn', text: `\`\`\`${error}\`\`\`` },
     });
 
     if (dashUrl) {
@@ -358,36 +315,26 @@ function buildSlackBlocks(
         type: 'actions',
         elements: [{
           type: 'button',
-          text: { type: 'plain_text', text: '📋 View Full Logs', emoji: true },
+          text: { type: 'plain_text', text: 'View Full Logs', emoji: true },
           url: dashUrl,
           style: 'danger',
         }],
       });
     }
 
-    return {
-      text: `❌ ${workerName} build failed`,
-      attachments: [{ color: '#ef4444', blocks }],
-    };
+    return { blocks };
   }
 
   // ===========
   // CANCELLED
   // ===========
   if (isCancelled) {
-    const blocks: any[] = [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `⚠️ *${workerName}* build cancelled`,
-        },
-      },
-    ];
+    let text = `⚠️ *${workerName}* build cancelled`;
+    if (contextLine) text += `\n${contextLine}`;
 
-    if (contextElements.length > 0) {
-      blocks.push({ type: 'context', elements: contextElements });
-    }
+    const blocks: any[] = [
+      { type: 'section', text: { type: 'mrkdwn', text } },
+    ];
 
     if (dashUrl) {
       blocks.push({
@@ -400,17 +347,13 @@ function buildSlackBlocks(
       });
     }
 
-    return {
-      text: `⚠️ ${workerName} build cancelled`,
-      attachments: [{ color: '#f59e0b', blocks }],
-    };
+    return { blocks };
   }
 
   // =========
   // FALLBACK
   // =========
   return {
-    text: event.type || 'Build event',
     blocks: [{
       type: 'section',
       text: { type: 'mrkdwn', text: `📢 ${event.type || 'Unknown event'}` },
@@ -424,7 +367,6 @@ function buildSlackBlocks(
 
 export default {
   async queue(batch: MessageBatch<CloudflareEvent>, env: Env): Promise<void> {
-    // Validate environment
     if (!env.SLACK_WEBHOOK_URL) {
       console.error('SLACK_WEBHOOK_URL is not configured');
       for (const message of batch.messages) {
@@ -437,14 +379,12 @@ export default {
       try {
         const event = message.body;
 
-        // Validate event structure
         if (!event?.type || !event?.payload || !event?.metadata) {
           console.error('Invalid event structure:', JSON.stringify(event));
           message.ack();
           continue;
         }
 
-        // Skip started events
         if (event.type.includes('started') || event.type.includes('queued')) {
           message.ack();
           continue;
@@ -460,7 +400,6 @@ export default {
         let previewUrl: string | null = null;
         let liveUrl: string | null = null;
 
-        // Fetch URLs for successful builds
         if (isSucceeded && workerName && accountId && env.CLOUDFLARE_API_TOKEN) {
           try {
             const buildRes = await fetch(
@@ -486,7 +425,6 @@ export default {
           }
         }
 
-        // Fetch logs for failed builds
         let logs: string[] = [];
 
         if (isFailed && !isCancelled && accountId && env.CLOUDFLARE_API_TOKEN) {
@@ -513,7 +451,6 @@ export default {
           }
         }
 
-        // Build and send Slack message
         const slackPayload = buildSlackBlocks(event, previewUrl, liveUrl, logs);
 
         const response = await fetch(env.SLACK_WEBHOOK_URL, {
