@@ -29,7 +29,7 @@ interface CloudflareEvent {
   payload: {
     buildUuid: string;
     status: string;
-    buildOutcome: 'success' | 'fail' | 'cancelled' | null;
+    buildOutcome: 'success' | 'failure' | 'canceled' | null;
     createdAt: string;
     initializingAt?: string;
     runningAt?: string;
@@ -190,7 +190,7 @@ function buildSlackBlocks(
   const dashUrl = getDashboardUrl(event);
   const commitUrl = getCommitUrl(event);
 
-  const isCancelled = buildOutcome === 'cancelled';
+  const isCancelled = buildOutcome === 'canceled';
   const isFailed = event.type?.includes('failed') && !isCancelled;
   const isSucceeded = event.type?.includes('succeeded');
   const isProduction = isProductionBranch(meta?.branch);
@@ -208,17 +208,19 @@ function buildSlackBlocks(
         },
         accessory: liveUrl || dashUrl ? {
           type: 'button',
-          text: { type: 'plain_text', text: liveUrl ? '🚀 View Worker' : 'View Build', emoji: true },
+          text: { type: 'plain_text', text: liveUrl ? 'View Worker' : 'View Build' },
           url: liveUrl || dashUrl,
         } : undefined,
       },
     ];
 
-    // Metadata in context block
+    // Metadata in context block - separated with bullets
     const contextElements: any[] = [];
+    
     if (meta?.branch) {
       contextElements.push({ type: 'mrkdwn', text: `*Branch:* \`${meta.branch}\`` });
     }
+    
     if (meta?.commitHash) {
       const commitText = meta.commitHash.substring(0, 7);
       contextElements.push({ 
@@ -226,11 +228,13 @@ function buildSlackBlocks(
         text: `*Commit:* ${commitUrl ? `<${commitUrl}|${commitText}>` : `\`${commitText}\``}` 
       });
     }
+    
     if (meta?.author) {
       const authorName = meta.author.includes('@') ? meta.author.split('@')[0] : meta.author;
       contextElements.push({ type: 'mrkdwn', text: `*Author:* ${authorName}` });
     }
 
+    // Always add context block even if only partial metadata
     if (contextElements.length > 0) {
       blocks.push({ type: 'context', elements: contextElements });
     }
@@ -251,7 +255,7 @@ function buildSlackBlocks(
         },
         accessory: previewUrl || dashUrl ? {
           type: 'button',
-          text: { type: 'plain_text', text: previewUrl ? '👁️ View Preview' : 'View Build', emoji: true },
+          text: { type: 'plain_text', text: previewUrl ? 'View Preview' : 'View Build' },
           url: previewUrl || dashUrl,
         } : undefined,
       },
@@ -259,9 +263,11 @@ function buildSlackBlocks(
 
     // Metadata in context block
     const contextElements: any[] = [];
+    
     if (meta?.branch) {
       contextElements.push({ type: 'mrkdwn', text: `*Branch:* \`${meta.branch}\`` });
     }
+    
     if (meta?.commitHash) {
       const commitText = meta.commitHash.substring(0, 7);
       contextElements.push({ 
@@ -269,6 +275,7 @@ function buildSlackBlocks(
         text: `*Commit:* ${commitUrl ? `<${commitUrl}|${commitText}>` : `\`${commitText}\``}` 
       });
     }
+    
     if (meta?.author) {
       const authorName = meta.author.includes('@') ? meta.author.split('@')[0] : meta.author;
       contextElements.push({ type: 'mrkdwn', text: `*Author:* ${authorName}` });
@@ -296,7 +303,7 @@ function buildSlackBlocks(
         },
         accessory: dashUrl ? {
           type: 'button',
-          text: { type: 'plain_text', text: '📋 View Logs', emoji: true },
+          text: { type: 'plain_text', text: 'View Logs' },
           url: dashUrl,
           style: 'danger',
         } : undefined,
@@ -349,7 +356,7 @@ function buildSlackBlocks(
         },
         accessory: dashUrl ? {
           type: 'button',
-          text: { type: 'plain_text', text: 'View Build', emoji: true },
+          text: { type: 'plain_text', text: 'View Build' },
           url: dashUrl,
         } : undefined,
       },
@@ -414,6 +421,16 @@ export default {
           continue;
         }
 
+        // Debug logging to see what metadata we're getting
+        console.log('Event metadata:', {
+          type: event.type,
+          workerName: event.source?.workerName,
+          branch: event.payload?.buildTriggerMetadata?.branch,
+          commitHash: event.payload?.buildTriggerMetadata?.commitHash,
+          author: event.payload?.buildTriggerMetadata?.author,
+          repoName: event.payload?.buildTriggerMetadata?.repoName,
+        });
+
         if (event.type.includes('started') || event.type.includes('queued')) {
           message.ack();
           continue;
@@ -422,7 +439,7 @@ export default {
         const isSucceeded = event.type.includes('succeeded');
         const isFailed = event.type.includes('failed');
         const buildOutcome = event.payload.buildOutcome;
-        const isCancelled = buildOutcome === 'cancelled';
+        const isCancelled = buildOutcome === 'canceled';
         const workerName = event.source?.workerName || event.payload.buildTriggerMetadata?.repoName;
         const accountId = event.metadata.accountId;
 
